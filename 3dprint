@@ -1,5 +1,5 @@
 -- Name: 3dPrinter.lua
--- Developer: Peter Stockings
+-- Developer: Peter Stockings & Cameron Huolohan
 -- Version: 1.0
 
 local blocks = {};
