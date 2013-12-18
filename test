@@ -1,0 +1,11 @@
+shell.run("Rectangle.class.lua");
+shell.run("Text.class.lua");
+shell.run("Frame.class.lua");
+
+local window = Frame.new(1,1,5,5);
+local fuelDisplay = Text.new(1,1,"Sick action mon");
+Text.new(6,1,"| <-- Frame end"):draw();
+window:addChild(fuelDisplay);
+window:draw();
+os.pullEvent("key");
+window:clear();

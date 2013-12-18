@@ -1,0 +1,48 @@
+print("What material?");
+local mat = read();
+print("What length?");
+local length = tonumber(read());
+print("What width?");
+local width = tonumber(read());
+
+print("Please give me " .. tostring(math.min(16*64,length*width)) .. " " .. mat);
+
+while inv.quantity(mat) < math.min(16*64,length*width) do
+  inv.update();
+  inv.query();
+  sleep(1);
+end
+
+print("Building platform");
+
+nav.setPose(0,0,0,"North");
+nav.setHandler(nav.nonblocking);
+
+local dir = "Right";
+
+for i = 1,width do
+
+  for j = 1,length do
+  
+    if turtle.detectDown() then
+      inv.digDown();
+    end  
+    inv.placeDown(mat);
+    nav.forward();
+  
+  end
+  
+  inv.digDown()
+  inv.placeDown(mat);
+  nav["turn" .. dir]();
+  nav.forward();
+  nav["turn" .. dir]();
+  
+  if dir == "Right" then
+    dir = "Left";
+  else
+    dir = "Right"
+  end
+end
+
+nav.goto(0,0,0);

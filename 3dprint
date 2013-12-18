@@ -1,0 +1,369 @@
+-- Name: 3dPrinter.lua
+-- Developer: Peter Stockings
+-- Version: 1.0
+
+local blocks = {};
+
+function minimumItemRequirements()
+  for i = 1,#blocks do
+    if inv.quantity(blocks[i]) < 2 then
+      return false;
+    end
+  end
+  return true;
+end
+
+-- Function: makeMatrix(width, depth, height)
+-- takes in the three sizes and returns a empty maktrix 
+function makeMatrix(width,depth,height)
+	local blockID = 0
+	local matrix = {}
+	for i = 1,width do
+		matrix[i] = {}
+		for j = 1,depth do
+			matrix[i][j] = {}
+			for k = 1,height do
+				matrix[i][j][k] = blockID
+			end
+		end
+	end
+	return matrix
+end
+
+-- **************************************************************
+-- @function printLayer(...)
+--
+-- Prints the given layer
+--
+-- @param layer
+--    A table of dimension 2 containing a layer to print
+-- @return nil
+-- **************************************************************
+function printLayer(layer,x1,y1)
+  term.clear();
+  local sx, sy = term.getSize();
+
+  for i = 1,math.min(sy-y1,#layer) do
+    term.setCursorPos(x1,y1+i-1);
+    for j = 1,math.min(sx-x1,#layer[i]) do
+      term.write(layer[i][j]);
+    end
+  end
+  return nil;
+end
+
+-- **************************************************************
+-- @function displayLayer(...)
+--
+-- 
+--
+-- @param 
+-- @return nil
+-- **************************************************************
+function displayLayer(layer)
+
+  local x, y = term.getSize();
+  x, y = math.floor(x/2), math.floor(y/2);
+
+  printLayer(layer,x,y);
+
+  while true do
+    event, key = os.pullEvent("key"); 
+
+    if keys.getName(key) == "up" then
+      y = y - 1;
+    elseif keys.getName(key) == "down" then
+      y = y + 1;
+    elseif keys.getName(key) == "left" then
+      x = x - 1;
+    elseif keys.getName(key) == "right" then
+      x = x + 1;
+    else
+      return key;
+    end
+
+    printLayer(layer,x,y);
+
+  end
+
+  return nil;
+end
+
+-- **************************************************************
+-- @function displayMatrix(frames)
+--
+-- 
+--
+-- @param 
+-- @return nil
+-- **************************************************************
+function displayMatrix(frames)
+
+  local layer = math.min(1,#frames);
+
+  repeat 
+    local key = displayLayer(frames[layer]);
+
+    if keys.getName(key) == "numPad6" then
+      layer = math.min(layer + 1,#frames);
+    elseif keys.getName(key) == "numPad4" then
+      layer = math.max(layer - 1,1);
+    end
+
+  until keys.getName(key) == "enter"
+  term.clear();
+  term.setCursorPos(1,1);
+
+  return nil;
+end
+
+--Function: readFile(filename)
+--reads a file into an array
+function readFile(filename)
+	local sFrame = 1
+	local frames = {}
+    frames[sFrame] = {}
+    if fs.exists(filename) then
+        local file = io.open(filename, "r" )
+        local sLine = file:read()
+        local num = 1
+        while sLine do
+            table.insert(frames[sFrame], num, {})
+            if sLine == "~" then
+                sFrame = sFrame + 1
+                frames[sFrame] = { }
+                num = 1
+            else
+                for i=1,#sLine do
+                    frames[sFrame][num][i] = string.sub(sLine,i,i)
+                end
+                num = num+1
+            end
+            sLine = file:read()
+        end
+        file:close()
+        return frames
+    end
+end
+
+-- **************************************************************
+-- @function getIDs(matrix)
+--
+-- Gets a table of all unique IDs used in matrix
+--
+-- @param matrix
+-- @return ids
+-- **************************************************************
+function getIDs(matrix)
+
+  local ids = {};
+  local idt = {};
+
+  for i = 1,#matrix do
+    for j = 1,#matrix[i] do
+      for k = 1,#matrix[i][j] do
+        idt[matrix[i][j][k]] = true;
+      end
+    end
+  end
+
+  for k,v in pairs(idt) do
+    ids[#ids+1] = getSlot(k);
+  end
+
+  return ids;
+end
+
+-- **************************************************************
+-- @function printBlocks(frames)
+--
+-- prints the matrix with blocks	
+--
+-- @param 3-dimensional matrix
+-- @return nil
+-- **************************************************************
+function printBlocks(frames)
+	--Loop through shape depositing blocks
+	for layer = 1,#frames do
+		for i = 1,#frames[layer] do
+			for j = 1,#frames[layer][i] do
+    local e = getSlot(frames[layer][i][j])
+    if e then
+  				nav.goto(i,layer,j)	
+  				placeBlock(frames[layer][i][j],i,layer,j)
+    end
+			end
+		end
+		
+	end
+end
+
+-- **************************************************************
+-- @function placeBlock(block)
+--
+-- Places a block below the current position based on the info in the matrix
+--
+-- @param block
+-- @return nil
+-- **************************************************************
+function placeBlock(block,x,y,z)
+  local i = getSlot(block);
+
+  if i then
+    if inv.quantity(blocks[i]) == 1 then
+      print("I am low on " .. blocks[i]);
+      --Go to start position awaiting for refuel
+      nav.goto(0,y,0);
+      nav.goto(0,0,0);
+      repeat
+        sleep(3);
+        inv.update(false);
+        inv.query();
+      until minimumItemRequirements();
+
+      --return to building at last position
+      nav.goto(0,y,0)
+      nav.goto(x,y,z)
+    end
+    if not inv.compareDown(blocks[i]) then
+      turtle.digDown();
+    end
+    inv.placeDown(blocks[i]);
+  end
+end
+
+-- **************************************************************
+-- @function printRequiredMaterials(materials)
+--  
+-- Prints the count of required materials as a nice display
+--
+-- @param materials
+--    A table containing numbers of item to be placed in a slot
+-- @return nil
+-- **************************************************************
+function printRequiredMaterials(materials)
+  term.clear(); 
+  term.setCursorPos(1,1);
+  print("Blocks Required\n");
+  local rowStr = "|  |  |  |  |";
+  local rowBorderStr = "-------------";
+ 
+  local cx, cy = term.getCursorPos();
+  print(rowBorderStr);
+  for i = 1,4 do
+    print(rowStr);
+    print(rowBorderStr);
+  end
+  local cxf, cyf = term.getCursorPos();
+
+  for i = 1,#materials do
+    local x = ((i-1)%4)+1;
+    local y = math.floor((i-1)/4)+1;
+    term.setCursorPos(cx + x*3-2,cy + y*2 - 1);
+    term.write(tostring(math.max(0,math.min(64,materials[i]))));
+  end
+
+  term.setCursorPos(cxf,cyf); 
+  return nil;
+end
+
+
+-- **************************************************************
+-- @function caculateItemRequirements(frame)
+--
+-- Caculate total number of each kind of item needed from 3Dimensional
+-- matrix
+--
+-- @param 3-Dimensional matrix containing data of shape
+-- @return nil
+-- **************************************************************
+function caculateItemRequirements(frames)
+	--Set bounds on shape
+	local requiredMaterials = {}
+  for i=1,16 do
+      requiredMaterials[i] = 0
+  end
+
+	--Loop through shape depositing blocks
+	for layer = 1,#frames do
+		for i = 1,#frames[layer] do
+			for j = 1,#frames[layer][i] do
+    local e = getSlot(frames[layer][i][j]);
+				if e then
+          requiredMaterials[math.log10(e)/math.log10(2) + 1] = requiredMaterials[math.log10(e)/math.log10(2) + 1] + 1   
+				end
+			end
+		end
+	end
+	
+  printRequiredMaterials(requiredMaterials);
+end
+
+-- **************************************************************
+-- @function getSlot(block)
+--
+-- returns the slot required for the inputtedf block ID, the block ID
+-- is a Hex code from 0-f representing slot 1-16
+--
+-- @param 'block' is the current block
+-- @return slotNum
+-- **************************************************************
+function getSlot(block)
+	local slotNum = tonumber(block, 16)
+  --slotNum = math.pow(2,slotNum)
+  if slotNum == nil then
+    return slotNum;
+  else
+	 return slotNum+1;
+  end
+end
+
+------------------------------------------------------------------------
+--						code                                          --
+------------------------------------------------------------------------
+local args = {...}
+local filename = args[1]
+
+if not nav then
+  os.loadAPI("nav");
+end
+if not inv then
+  os.loadAPI("inv");
+end
+
+--Read the selected file into a 3Dimensional matrix
+local matrix = readFile(filename)
+
+--Display the shape on screen
+write("Display object? ");
+local uin = read();
+if uin == "yes" or uin == "y" then
+	displayMatrix(matrix);
+end
+
+--caculate how many of each item need to be in each slot
+write("Caculate item requirements? ");
+uin = read();
+if uin == "yes" or uin == "y" then
+	caculateItemRequirements(matrix);
+end
+
+local ids = getIDs(matrix);
+
+for i = 1,#ids do
+  print("What block is id " .. tostring(ids[i]-1) .. " ?");
+  blocks[ids[i]] = read();
+end
+
+--assemble the matrix out of blocks
+nav.setPose(0,1,0,"East");
+nav.setHandler(nav.nonblocking);
+
+repeat 
+  inv.update();
+  inv.query();
+until minimumItemRequirements()
+
+printBlocks(matrix);
+nav.setHandler(nav.aversion);
+nav.goto(0,0,0,"North");

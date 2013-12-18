@@ -1,0 +1,603 @@
+-- **************************************************************
+-- @file inv
+-- 
+-- An inventory management API for computer craft turtles
+--
+-- @author MrCobalt
+-- @created 12 Dec, 2013
+-- @modified 13 Dec, 2013
+-- @version 3.0
+-- **************************************************************
+
+if not Inventory then
+	assert(os.run(getfenv(),"Inventory.class.lua"),"Class not found: Inventory.class.lua");
+end
+
+local inventory = Inventory.new(16);
+local selSlot = 1;
+local backupFilename = "inv.sav";
+local backupStatus = false;
+local _turtle = {
+	select = turtle.select,
+	place = turtle.place,
+	placeUp = turtle.placeUp,
+	placeDown = turtle.placeDown,
+	drop = turtle.drop,
+	dropUp = turtle.dropUp,
+	dropDown = turtle.dropDown,
+	transferTo = turtle.transferTo,
+	dig = turtle.dig,
+	digUp = turtle.digUp,
+	digDown = turtle.digDown,
+	suck = turtle.suck,
+	suckUp = turtle.suckUp,
+	suckDown = turtle.suckDown,
+	compare = turtle.compare;
+	compareUp = turtle.compareUp,
+	compareDown = turtle.compareDown
+};
+
+function save(filename)
+	local file = io.open(filename,"wb");
+	inventory:write(file);
+	file:write(selSlot);
+	file:close();
+end
+
+function load (filename)
+	local file = io.open(filename,"rb");
+	if file == nil then
+		return false;
+	end
+
+	inventory = Inventory.read(file);
+	selSlot = file.read("*number");
+	file:close();
+	if inventory == nil or selSlot == nil then
+		return false;
+	end
+
+	return true;
+end
+
+function select(arg)
+
+	if type(arg) == "number" then
+
+		if _turtle.select(arg) then
+			selSlot = arg;
+			if backupStatus then
+				save(backupFilename);
+			end
+			return true;
+		else
+			return false;
+		end
+
+	elseif type(arg) == "string" then
+		local slots = inventory:find(arg);
+		if #slots > 0 then
+			selSlot = slots[1];
+
+			if _turtle.select(arg) then
+				selSlot = slots[1];
+				if backupStatus then
+					save(backupFilename);
+				end
+				return true;
+			else
+				return false;
+			end
+
+		else
+			return false, "no_item";
+		end
+	end
+end
+
+function update(boolean)
+
+	if boolean == nil then
+		boolean = true;
+	end
+
+	local prevSlot = selSlot;
+
+	function determineSlotStatus()
+		local unknownSlots = {};
+		local knownSlots = {};
+
+		for i = 1,inventory.size do
+			if boolean then
+				if inventory.slots[i].qty ~= turtle.getItemCount(i) then
+					inventory.slots[i].item = Item.new();
+				end
+			end
+			inventory.slots[i].qty = turtle.getItemCount(i);
+			if inventory.slots[i].qty > 0 then
+				if inventory.slots[i].item.id > 0 then
+					knownSlots[#knownSlots+1] = i;
+				else
+					unknownSlots[#unknownSlots+1] = i;
+				end
+			else
+				inventory.slots[i].item = Item.new();
+			end
+		end
+
+		return unknownSlots, knownSlots;
+	end
+
+	function newUniqueID()
+		local uid = 1;
+		local ids = inventory:ids();
+		local idt = {};
+		for i = 1,#ids do
+			idt[ids[i]] = true;
+		end
+		while idt[uid] do
+			uid = uid + 1;
+		end
+		return uid;
+	end
+
+	repeat
+		local unknownSlots, knownSlots = determineSlotStatus();
+		if #unknownSlots == 0 then
+			break;
+		end
+
+		select(unknownSlots[1]);
+
+		-- Determine if item is known
+		for i = 1,#knownSlots do
+			if turtle.compareTo(knownSlots[i]) then
+				inventory.slots[unknownSlots[1]].item = inventory.slots[knownSlots[i]].item;
+			end
+		end
+
+		-- If not known assign a unique ID
+		if inventory.slots[unknownSlots[1]].item.id == 0 then
+			inventory.slots[unknownSlots[1]].item.id = newUniqueID();
+		end
+
+		-- Look for other unknowns that are the same
+		for i = 2,#unknownSlots do
+			if turtle.compareTo(unknownSlots[i]) then
+				inventory.slots[unknownSlots[i]].item = inventory.slots[unknownSlots[1]].item;
+			end
+		end
+	until #unknownSlots == 0
+
+	select(prevSlot);
+	
+end
+
+function quantity(item)
+
+	return inventory:quantity(item);
+end
+
+function display(...)
+	local args = {...};
+
+  term.clear(); 
+  term.setCursorPos(1,1);
+  local rowStr = "|  |  |  |  |";
+  local rowBorderStr = "-------------";
+ 
+  local cx, cy = term.getCursorPos();
+  print(rowBorderStr);
+  for i = 1,4 do
+    print(rowStr);
+    print(rowBorderStr);
+  end
+  local cxf, cyf = term.getCursorPos();
+
+  for i = 1,inventory.size do
+    local x = ((i-1)%4)+1;
+    local y = math.floor((i-1)/4)+1;
+    term.setCursorPos(cx + x*3-2,cy + y*2 - 1);
+    if #args > 0 then
+    	if inventory.slots[i].item.id ~= 0 then
+    		term.write(tostring(math.max(0,math.min(99,inventory.slots[i].item.id))));
+    	end
+    else
+    	term.write(tostring(math.max(0,math.min(99,inventory.slots[i].qty))));
+    end
+  end
+
+  term.setCursorPos(cxf,cyf); 
+  return nil;
+end
+
+function query()
+	local ids = inventory:ids();
+
+	for i = 1,#ids do
+		local slots = inventory:find(ids[i]);
+		if inventory.slots[slots[1]].item.name == "unknown" then
+			_turtle.select(slots[1]);
+			print("What item is this? ");
+			inventory.slots[slots[1]].item.name = read();
+		end
+	end
+
+	if backupStatus then
+		save(backupFilename);
+	end
+end
+
+function protect(boolean)
+	if boolean == true or boolean == nil then
+		local env = getfenv();
+		for k,v in pairs(_turtle) do
+			turtle[k] = env[k];
+		end
+	else
+		for k,v in pairs(_turtle) do
+			turtle[k] = _turtle[k];
+		end
+	end
+end
+
+function backup(boolean)
+	if boolean == nil then
+		boolean = true;
+	end
+
+	if boolean then
+		backupStatus = true;
+		save(backupFilename);
+	else
+		backupStatus = false;
+	end
+
+  local f = fs.open("startup","r");
+  local fw = fs.open("startup.new","w");
+
+  if f then
+    repeat
+      
+      local line = f.readLine();
+      if not line then break end
+
+      if line == "-- inv" then
+          f.readLine();
+          f.readLine();
+          line = f.readLine();
+          if not line then break end
+      end
+      fw.write(line .. "\n");
+
+    until not line;
+
+    f.close();
+    fs.delete("startup");
+  end
+  
+  fw.close();
+  fs.move("startup.new","startup");
+
+  if boolean then
+    f = fs.open("startup","a");
+    f.write("\n-- inv\nos.loadAPI(\"inv\");\ninv.restore();\n");
+    f.close();
+  end
+end
+
+function restore()
+	load(backupFilename);
+end
+
+function place(item)
+
+	if item == nil then
+		if _turtle.place() then
+			inventory.slots[selSlot].qty = inventory.slots[selSlot].qty - 1;
+
+			if backupStatus then
+				save(backupFilename);
+			end
+
+			return true;
+		else
+			return false;
+		end
+	end
+
+	local slots = inventory:find(item);
+	if #slots == 0 then
+		return false, "no_item";
+	end
+
+	select(slots[1]);
+	if _turtle.place() then
+		inventory.slots[slots[1]].qty = inventory.slots[slots[1]].qty - 1;
+
+		if backupStatus then
+			save(backupFilename);
+		end
+
+		return true;
+	else
+		return false;
+	end
+end
+
+function placeUp(item)
+	if item == nil then
+		if _turtle.placeUp() then
+			inventory.slots[selSlot].qty = inventory.slots[selSlot].qty - 1;
+
+			if backupStatus then
+				save(backupFilename);
+			end
+
+			return true;
+		else
+			return false;
+		end
+	end
+
+	local slots = inventory:find(item);
+	if #slots == 0 then
+		return false, "no_item";
+	end
+
+	select(slots[1]);
+	if _turtle.placeUp() then
+		inventory.slots[slots[1]].qty = inventory.slots[slots[1]].qty - 1;
+
+		if backupStatus then
+				save(backupFilename);
+		end
+
+		return true;
+	else
+		return false;
+	end
+end
+
+function placeDown(item)
+	if item == nil then
+		if _turtle.placeDown() then
+			inventory.slots[selSlot].qty = inventory.slots[selSlot].qty - 1;
+
+			if backupStatus then
+				save(backupFilename);
+			end
+
+			return true;
+		else
+			return false;
+		end
+	end
+
+	local slots = inventory:find(item);
+	if #slots == 0 then
+		return false, "no_item";
+	end
+
+	select(slots[1]);
+	if _turtle.placeDown() then
+
+		if backupStatus then
+				save(backupFilename);
+		end
+
+		inventory.slots[slots[1]].qty = inventory.slots[slots[1]].qty - 1;
+		return true;
+	else
+		return false;
+	end
+end
+
+function drop(...)
+
+	local args = {...};
+
+	if #args > 0 then
+
+		if type(args[1]) == "number" then -- Drop from current slot
+
+			if _turtle.drop(args[1]) then
+				inventory.slots[selSlot].qty = math.max(0,inventory.slots[selSlot].qty - args[1]);
+
+				if backupStatus then
+					save(backupFilename);
+				end
+
+				return true;
+			else
+				return false;
+			end
+
+		elseif type(args[1]) == "string" then -- Drop item name
+
+			local slots;
+			slots = inventory:find(args[1]);
+			if #slots == 0 then
+				return false, "no_item";
+			end
+
+			select(slots[1]);
+
+			if #args > 1 then
+
+				if _turtle.drop(args[2]) then
+					inventory.slots[selSlot].qty = math.max(0,inventory.slots[selSlot].qty - args[2]);
+
+					if backupStatus then
+						save(backupFilename);
+					end
+					return true;
+				else
+					return false;
+				end
+
+			else
+
+				if _turtle.drop() then
+					inventory.slots[selSlot].qty = 0;
+
+					if backupStatus then
+						save(backupFilename);
+					end
+					return true;
+				else
+					return false;
+				end
+
+			end
+		end
+
+	else -- Default use: turtle.drop()
+		if _turtle.drop() then
+			inventory.slots[selSlot].qty = 0;
+			inventory.slots[selSlot].item = Item.new();
+
+			if backupStatus then
+				save(backupFilename);
+			end
+
+			return true;
+		else
+			return false;
+		end
+	end
+end
+
+function dropUp(count,item)
+	local slots;
+	if item then
+		slots = inventory:find(item);
+		if #slots == 0 then
+			return false, "no_item";
+		end
+		select(slots[1]);
+	end
+
+	if _turtle.dropUp(count) then
+		inventory.slots[selSlot].qty = math.max(0,inventory.slots[selSlot].qty - count);
+
+		if backupStatus then
+				save(backupFilename);
+		end
+
+		return true;
+	else
+		return false;
+	end
+end
+
+function dropDown(count,item)
+	local slots;
+	if item then
+		slots = inventory:find(item);
+		if #slots == 0 then
+			return false, "no_item";
+		end
+		select(slots[1]);
+	end
+
+	if _turtle.dropDown(count) then
+		inventory.slots[selSlot].qty = math.max(0,inventory.slots[selSlot].qty - count);
+
+		if backupStatus then
+				save(backupFilename);
+		end
+
+		return true;
+	else
+		return false;
+	end
+end
+
+function dig()
+	if _turtle.dig() then
+		update(false);
+		return true;
+	end
+	return false;
+end
+
+function digUp()
+	if _turtle.digUp() then
+		update(false);
+		return true;
+	end
+	return false;
+end
+
+function digDown()
+	if _turtle.digDown() then
+		update(false);
+		return true;
+	end
+	return false;
+end
+
+function suck()
+	if _turtle.suck() then
+		update(false);
+		return true;
+	end
+	return false;
+end
+
+function suckUp()
+	if _turtle.suckUp() then
+		update(false);
+		return true;
+	end
+	return false;
+end
+
+function suckDown()
+	if _turtle.suckDown() then
+		update(false);
+		return true;
+	end
+	return false;
+end
+
+function compare(item)
+	if item == nil then
+		return _turtle.compare();
+	end
+
+	if select(item) then
+		return _turtle.compare();
+	else
+		return false, "no_item";
+	end
+end
+
+function compareUp(item)
+	if item == nil then
+		return _turtle.compareUp();
+	end
+
+	if select(item) then
+		return _turtle.compareUp();
+	else
+		return false, "no_item";
+	end
+end
+
+function compareDown(item)
+	if item == nil then
+		return _turtle.compareDown();
+	end
+
+	if select(item) then
+		return _turtle.compareDown();
+	else
+		return false, "no_item";
+	end
+end
+
+-- INITIALISE
+turtle.select(selSlot);
+protect();

@@ -1,0 +1,1119 @@
+-- **************************************************************
+-- @file nav
+-- 
+-- A navigation and localisation API for computer craft turtles
+--
+-- Functional summary:
+-- 
+--    Management: 
+--      backup, restore, setHandler, setPose, protect, localise
+--
+--    Movement: 
+--      forward, back, up, down, left, right, turnLeft, turnRight
+--    
+--    Advanced movement: 
+--      goto, move, face
+--
+--    Handlers:
+--      aversion, nonblocking
+--
+-- TODO:
+--    Implement push/pop of localisation frames.
+-- 
+-- @author MrCobalt
+-- @created 28 Jun, 2013
+-- @modified 10 Dec, 2013
+-- @version 12.1
+-- **************************************************************
+
+-- Public
+orientation = { NORTH = 0, EAST = 1, SOUTH = 2, WEST = 3};
+axes = {
+  GLOBAL = { NORTH = {0,0,-1}, EAST = {1,0,0}, SOUTH = {0,0,1}, WEST = {-1,0,0}},
+  VEHICLE = { NORTH = {1,0,0}, EAST = {0,0,1}, SOUTH = {-1,0,0}, WEST = {0,0,-1}}
+};
+
+
+-- ********************   PRIVATE   ******************************
+
+local backupFilename = "nav.sav";
+local backupStatus = false;
+local handler = nil;
+local pose = { pos = vector.new(0,0,0), ori = orientation.NORTH};
+local axis = axes.GLOBAL;
+local _turtle = { 
+  forward = turtle.forward,
+  back = turtle.back,
+  up = turtle.up,
+  down = turtle.down,
+  turnLeft = turtle.turnLeft,
+  turnRight = turtle.turnRight
+};
+
+-- **************************************************************
+-- @function save(...)
+--
+-- Saves the current navigation data
+--
+-- @return nil
+-- **************************************************************
+local save = function ()
+  local f = fs.open(backupFilename,"w");
+  f.write(tostring(pose.pos) .. "," .. tostring(pose.ori) .. "\n");
+  f.write(tostring(handler));
+  f.close();
+  return nil;
+end
+
+-- **************************************************************
+-- @function load()
+--
+-- Loads the saved navigation data
+--
+-- @param 
+-- @return nil
+-- **************************************************************
+local load = function ()
+  local f = fs.open(backupFilename,"r");
+  if not f then
+    return false;
+  end
+
+  x,y,z,o = f.readLine():match("([\+\-]?%d+),([\+\-]?%d+),([\+\-]?%d+),(%d)");
+  if not x or not y or not z or not o then
+    return false;
+  end
+  pose.pos = vector.new(x,y,z);
+  pose.ori = o;
+
+  f.close();
+  return true;
+end
+
+-- **************************************************************
+-- @function str2ori(string)
+--
+-- Converts string to an orientation enumeration
+--
+-- @param string
+--  Where string is case insensitive and either 
+--   "North", "East", "South", "West"
+-- @return orientation enumeration
+-- **************************************************************
+local str2ori = function (str)
+  for key,value in pairs(orientation) do
+    if string.upper(str) == key then
+      return value;
+    end
+  end
+  return nil;
+end
+
+-- **************************************************************
+-- @function ori2str(ori)
+--
+-- Converts the orientation enumeration to a string
+--
+-- @param ori 
+--    orientation enumeration
+-- @return nil
+-- **************************************************************
+local ori2str = function (ori)
+  for key,value in pairs(orientation) do
+    if ori == value then
+      return key;
+    end
+  end
+  return nil;
+end
+
+
+-- **************************************************************
+-- @function ori2vec(orientation)
+--
+-- Returns a unit vector pointing in the direction of orientation
+--
+-- @param orientation enumeration
+-- @return vector
+-- **************************************************************
+local ori2vec = function (ori)
+
+  return vector.new(unpack(axis[ori2str(ori)]));
+end
+
+-- **************************************************************
+-- @function vec2ori(...)
+--
+-- Transforms the single direction unit vector into an
+-- orientation.
+--
+-- @param vector
+--    The single direction unit vector
+-- @return orientation enumeration
+-- **************************************************************
+local vec2ori = function (vec)
+  -- Condition vector into an axis
+  vec.y = 0;
+  vec = vec:normalize();
+  if math.abs(vec.x) >= math.abs(vec.z) then
+    vec.x, vec.z = vec.x/math.abs(vec.x), 0;
+  else
+    vec.x, vec.z = 0, vec.z/math.abs(vec.z);
+  end
+
+  -- Return orientation from axis
+  for key,value in pairs(axis) do
+    if (vec - vector.new(unpack(value))):length() == 0 then
+      return str2ori(key);
+    end
+  end
+  return nil;
+end
+
+-- **************************************************************
+-- @function rotateVec(vec, turns)
+--
+-- Rotates the vector vec by turns clockwise 90 degree turns.
+--
+-- @param vec
+--    The vector to be rotated
+-- @param turns
+--    The number of clockwise 90 degree turns
+-- @return vector
+--    The clockwise rotated vector
+-- **************************************************************
+local rotateVec = function (vec, turns)
+  
+  if (turns % 3) == 0 then
+    return vec;
+  elseif (math.abs(turns) % 3) == 1 then
+    if turns > 0 then
+      return vector.new(-vec.z,vec.y,vec.x);
+    else
+      return vector.new(vec.z,vec.y,-vec.x);
+    end
+  elseif ((math.abs(turns) % 3) == 2) then
+    return vector.new(-vec.x,vec.y,-vec.z);
+  end
+  return nil;
+end
+
+
+-- **************************************************************
+-- @function boundOrientation(ori)
+--
+-- Bounds the orientation given by ori to [0,3]
+--
+-- @param ori
+--   An integer representation of the orientation
+-- @return orientation enumeration
+-- **************************************************************
+local boundOrientation = function (ori)
+  if ori < 0 then
+    ori = math.abs(ori) % 4;
+    if ori ~= 0 then
+      ori = 4 - ori;
+    end
+  else
+    ori = ori % 4;
+  end 
+  
+  return ori;
+end
+
+-- **************************************************************
+-- @function updatePose(movement)
+--
+-- Updates the internal pose vector based upon movement where
+-- movement is one of "forward", "back", "up", "down"
+--
+-- @param 
+-- @return nil
+-- **************************************************************
+local updatePose = function (movement)
+
+  if movement == "forward" then
+    pose.pos = pose.pos + ori2vec(pose.ori);
+  elseif movement == "back" then
+    pose.pos = pose.pos - ori2vec(pose.ori);
+  elseif movement == "up" then
+    pose.pos.y = pose.pos.y + 1;
+  elseif movement == "down" then
+    pose.pos.y = pose.pos.y - 1;
+  end
+end
+  
+-- **************************************************************
+-- @function step(direction)
+--
+-- Event based step. Throws the events,
+-- "nav", "step", direction | "result", true | false
+--
+-- @param direction
+--    The direction in which to step either 
+--    "forward" | "back" | "up" | "down"
+-- @return boolean
+--    Whether the requested step was completed or not
+-- **************************************************************
+local step = function (direction)
+  while not _turtle[direction]() do
+    os.queueEvent("nav", "step", direction, false);
+    _,response = os.pullEvent("nav");
+    if response == "stop" then
+      os.queueEvent("nav", "step", "result", false);
+      return false;
+    end
+  end
+
+  updatePose(direction);
+
+  if backupStatus then
+    save();
+  end
+
+  return true;
+end
+
+-- ********************   PUBLIC   ******************************
+
+-- **************************************************************
+-- @function restore(...)
+--
+-- Restores the navigation data from backup file.
+--
+-- @param nil
+-- @return nil
+-- **************************************************************
+function restore()
+  if not load() then
+    localise();
+  end
+  return nil;
+end
+
+-- **************************************************************
+-- @function backup(...)
+--
+-- Backs up the navigation position in case of turtle reloading
+--
+-- @param boolean
+--
+-- @return nil
+-- **************************************************************
+function backup(...)
+  local args = {...};
+  local boolean = true;
+
+  if #args > 0 then
+    boolean = args[1];
+  end
+
+  backupStatus = true;
+  save(); 
+
+  local f = fs.open("startup","r");
+  local fw = fs.open("startup.new","w");
+
+  if f then
+    repeat
+      
+      local line = f.readLine();
+      if not line then break end
+
+      if line == "-- nav" then
+          f.readLine();
+          f.readLine();
+          line = f.readLine();
+          if not line then break end
+      end
+      fw.write(line .. "\n");
+
+    until not line;
+
+    f.close();
+    fs.delete("startup");
+  end
+  
+  fw.close();
+  fs.move("startup.new","startup");
+
+  if boolean then
+    f = fs.open("startup","a");
+    f.write("\n-- nav\nos.loadAPI(\"nav\");\nnav.restore();\n");
+    f.close();
+  end
+
+  return nil;
+end
+
+-- **************************************************************
+-- @function setHandler(...)
+--
+-- Sets the event handler for the navigation API
+--
+-- @param function handle
+-- @return nil
+-- **************************************************************
+function setHandler(handle)
+  handler = handle;
+  return nil;
+end
+
+-- **************************************************************
+-- @function setPose(vector, orientation)
+--
+-- Sets the current pose of the turtle to position in vector and
+-- orientation.
+--
+-- @param vector class containing position
+-- @param orientation enumeration
+-- @return nil
+-- **************************************************************
+function setPose(...)
+
+  local args = {...};
+  local v = vector.new(0,0,0);
+  local ori = nil;
+
+  -- Interpret input arguments
+  if #args > 0 and #args < 3 then
+    v = args[1];
+  elseif #args >= 3 then
+    v = vector.new(args[1],args[2],args[3]);
+  else
+    return nil;
+  end
+
+	pose.pos = v;
+
+  if #args == 2 then
+    ori = args[2];
+  elseif #args == 4 then
+    ori = args[4];
+  end
+
+  if type(ori) == "string" then
+    pose.ori = str2ori(ori);
+  elseif type(ori) == "number" then
+    pose.ori = ori;
+  end
+end
+
+function getPose()
+  
+  return pose.pos, ori2str(pose.ori);
+end
+
+-- ********************
+-- @function face(direction)
+--
+-- Faces the turtle toward direction
+-- in the local reference frame
+--
+-- @param direction
+-- 	  A case insensitive string either "North" | "East" | "West" | "South"
+--    or an orientation enumeration.
+-- @return nil
+-- ********************
+function face(direction)
+
+	-- If input is a string convert to enumeration
+	if type(direction) == "string" then
+  	direction = str2ori(direction);
+  end
+  
+  local offset = direction-pose.ori;  
+  if offset == 0 then
+  	return nil;
+  elseif math.abs(offset) == 3 then
+  	offset = -offset/3;
+  end
+  
+  local side = "";
+  if offset > 0 then
+  	side = "Right";
+  else
+  	side = "Left";
+  end
+  
+  for i = 1,math.abs(offset) do
+  	_turtle["turn" .. side]();
+  end
+  
+  pose.ori = direction;
+
+  if backupStatus then
+    save();
+  end
+
+  return nil;
+end
+
+-- **************************************************************
+-- @function goto(...)
+--
+-- Moves the turtle to the vector coordinate v in the local
+-- system.
+--
+-- @param 
+-- @return
+-- **************************************************************
+function goto(...)
+
+	local args = {...};
+
+  local v = vector.new(0,0,0);
+
+  -- Interpret input arguments
+  if #args > 0 and #args < 3 then
+    v = args[1];
+  elseif #args >= 3 then
+    v = vector.new(args[1],args[2],args[3]);
+  end
+
+  local dv = v - pose.pos;
+  local mdir = ""; -- Movement direction "forward" | "back" | "up" | "down"
+  
+  -- Iterative movement
+  while dv:length() ~= 0 do
+    
+    -- Determine next step
+    local count = 1;
+    dir = dv:normalize();
+    
+    if math.abs(dir.y) > math.abs(dir.z) and math.abs(dir.y) > math.abs(dir.x) then
+      tdir = nil;
+    	if dir.y > 0 then
+      	mdir = "up";
+      else
+      	mdir = "down";
+      end
+    elseif math.abs(dir.x) == math.abs(dir.z) then
+      mdir = "forward";
+      face(vec2ori(dir));
+      count = math.floor(dv:length()/2 + 0.5);
+    else
+      mdir = "forward";
+      face(vec2ori(dir));
+    end  
+
+    -- Optimised path planning
+    for i = 1,count do
+
+      -- Implement movement
+      if handler then
+
+        local hStep = coroutine.create(step);
+        local hHandler = coroutine.create(handler);
+        local evt = {};
+
+        coroutine.resume(hStep, mdir);
+        while true do
+          if coroutine.status(hStep) == "suspended" then
+            coroutine.resume(hStep, unpack(evt));
+          end
+          coroutine.resume(hHandler, unpack(evt));
+          if coroutine.status(hStep) == "dead" then
+            break;
+          end
+          evt = {os.pullEvent()};
+        end
+
+      else
+  			while not _turtle[mdir]() do sleep(1) end
+        updatePose(mdir);
+      end
+    end
+    
+    -- Recalculate path vector
+    dv = v - pose.pos;
+  end
+  
+  -- Turn and face final direction if specified
+  if #args == 2 then
+  	face(args[2]);
+  elseif #args == 4 then
+    face(args[4]);
+  end
+
+  return true;
+end
+
+-- **************************************************************
+-- @function move(...)
+--
+-- Moves the turtle to the vector coordinate v from the current
+-- position
+--
+-- @param v
+--  A vector to the new position
+-- @param [orientation]
+--  The orientation to face once destination is reached.
+-- @return boolean
+--  The success status of the operation
+-- **************************************************************
+function move(...)
+
+  local args = {...};
+  local v = vector.new(0,0,0);
+
+  -- Interpret input arguments
+  if #args > 0 and #args < 3 then
+    v = args[1];
+  elseif #args >= 3 then
+    v = vector.new(args[1],args[2],args[3]);
+  end
+
+  -- TODO Rotate vector v
+  v = rotateVec(v,pose.ori);
+  
+  if #args == 2 then
+    return goto(v + pose.pos, boundOrientation(pose.ori - str2ori(args[2]))); 
+  elseif #args == 4 then
+    return goto(v + pose.pos, boundOrientation(pose.ori - str2ori(args[4]))); 
+  else
+    return goto(v + pose.pos);
+  end
+end
+
+-- **************************************************************
+-- @function forward(...)
+--
+-- Moves the turtle forward, optionally a specified number of 
+-- steps
+--
+-- @param
+-- @return
+-- **************************************************************
+function forward(...)
+
+  local args = {...};
+  local count = 1;
+  
+  if #args > 0 then
+    count = tonumber(args[1]);
+  end
+  
+  if handler then
+    for i = 1,count do
+
+      local hStep = coroutine.create(step);
+      local hHandler = coroutine.create(handler);
+      local evt = {};
+
+      coroutine.resume(hStep, "forward");
+      while true do
+        if coroutine.status(hStep) == "suspended" then
+          coroutine.resume(hStep, unpack(evt));
+        end
+        coroutine.resume(hHandler, unpack(evt));
+        if coroutine.status(hStep) == "dead" then
+          break;
+        end
+        evt = {os.pullEvent()};
+      end
+
+    end
+  else
+    for i = 1,count do
+      if _turtle.forward() then
+        pose.pos = pose.pos + ori2vec(pose.ori);
+      else
+        return false;
+      end
+    end
+  end
+  
+  return true;
+end
+
+-- **************************************************************
+-- @function back(...)
+--
+-- Moves the turtle back, optionally a specified number of 
+-- steps
+--
+-- @param
+-- @return
+-- **************************************************************
+function back(...)
+
+  local args = {...};
+  local count = 1;
+  
+  if #args > 0 then
+    count = tonumber(args[1]);
+  end
+  
+  if handler then
+    for i = 1,count do
+
+      local hStep = coroutine.create(step);
+      local hHandler = coroutine.create(handler);
+      local evt = {};
+
+      coroutine.resume(hStep, "back");
+      while true do
+        if coroutine.status(hStep) == "suspended" then
+          coroutine.resume(hStep, unpack(evt));
+        end
+        coroutine.resume(hHandler, unpack(evt));
+        if coroutine.status(hStep) == "dead" then
+          break;
+        end
+        evt = {os.pullEvent()};
+      end
+
+    end
+  else
+    for i = 1,count do
+      if _turtle.back() then
+        pose.pos = pose.pos - ori2vec(pose.ori);
+      else
+        return false;
+      end
+    end
+  end
+  
+  return true;
+end
+
+-- **************************************************************
+-- @function up(...)
+--
+-- Moves the turtle up, optionally a specified number of steps
+--
+-- @param
+-- @return
+-- **************************************************************
+function up(...)
+
+  local args = {...};
+  local count = 1;
+  
+  if #args > 0 then
+    count = tonumber(args[1]);
+  end
+  
+  if handler then
+    for i = 1,count do
+
+      local hStep = coroutine.create(step);
+      local hHandler = coroutine.create(handler);
+      local evt = {};
+
+      coroutine.resume(hStep, "up");
+      while true do
+        if coroutine.status(hStep) == "suspended" then
+          coroutine.resume(hStep, unpack(evt));
+        end
+        coroutine.resume(hHandler, unpack(evt));
+        if coroutine.status(hStep) == "dead" then
+          break;
+        end
+        evt = {os.pullEvent()};
+      end
+
+    end
+  else
+    for i = 1,count do
+      if _turtle.up() then
+        pose.pos = pose.pos + vector.new(0,1,0);
+      else
+        return false;
+      end
+    end
+  end
+  
+  return true;
+end
+
+-- **************************************************************
+-- @function down(...)
+--
+-- Moves the turtle down, optionally a specified number of steps
+--
+-- @param
+-- @return
+-- **************************************************************
+function down(...)
+
+  local args = {...};
+  local count = 1;
+  
+  if #args > 0 then
+    count = tonumber(args[1]);
+  end
+  
+  if handler then
+    for i = 1,count do
+
+      local hStep = coroutine.create(step);
+      local hHandler = coroutine.create(handler);
+      local evt = {};
+
+      coroutine.resume(hStep, "down");
+      while true do
+        if coroutine.status(hStep) == "suspended" then
+          coroutine.resume(hStep, unpack(evt));
+        end
+        coroutine.resume(hHandler, unpack(evt));
+        if coroutine.status(hStep) == "dead" then
+          break;
+        end
+        evt = {os.pullEvent()};
+      end
+    end
+  else
+    for i = 1,count do
+      if _turtle.down() then
+        pose.pos = pose.pos + vector.new(0,-1,0);
+      else
+        return false;
+      end
+    end
+  end
+  
+  return true;
+end
+
+-- **************************************************************
+-- @function turnLeft(...)
+--
+-- Turns the turtle left
+--
+-- @param [count]
+-- @return nil
+-- **************************************************************
+function turnLeft(...)
+  local args = {...};
+  local count = 1;
+  
+  if #args > 0 then
+    count = tonumber(args[1]);
+  end
+  
+  for i = 1,count do
+    _turtle.turnLeft();
+  end
+  
+  pose.ori = boundOrientation(pose.ori - count);
+
+  if backupStatus then
+    save();
+  end
+end
+
+-- **************************************************************
+-- @function turnRight(...)
+--
+-- Turns the turtle right
+--
+-- @param [count]
+-- @return nil
+-- **************************************************************
+function turnRight(...)
+  local args = {...};
+  local count = 1;
+  
+  if #args > 0 then
+    count = tonumber(args[1]);
+  end
+  
+  for i = 1,count do
+    _turtle.turnRight();
+  end
+  
+  pose.ori = boundOrientation(pose.ori + count);
+
+  if backupStatus then
+    save();
+  end
+end
+
+-- **************************************************************
+-- @function left(...)
+--
+-- Moves the turtle to the left, optionally a specified number
+-- of steps.
+--
+-- @param [steps]
+--    The number of steps to move to the left.
+--    Default: 1
+-- @return boolean
+--    Success status
+-- **************************************************************
+function left(...)
+
+  local args = {...};
+  local count = 1;
+  
+  if #args > 0 then
+    count = tonumber(args[1]);
+  end
+  
+  turnLeft();
+  return forward(count);
+end
+
+
+-- **************************************************************
+-- @function right(...)
+--
+-- Moves the turtle to the right, optionally a specified number
+-- of steps.
+--
+-- @param [steps]
+--    The number of steps to move to the right.
+--    Default: 1
+-- @return boolean
+--    Success status
+-- **************************************************************
+function right(...)
+  local args = {...};
+  local count = 1;
+  
+  if #args > 0 then
+    count = tonumber(args[1]);
+  end
+  
+  turnRight();
+  return forward(count); 
+end
+
+-- **************************************************************
+-- @function protect(...)
+--
+-- Protects the turtle API so that if it's movement functions are
+-- called, navigation still continues to operate.
+--
+-- @param [boolean]
+--    Whether to protect, or unprotect the turtle API.
+--    Default: true
+-- @return nil
+-- **************************************************************
+function protect(...)
+  local args = {...};
+  local boolean = true;
+  
+  if #args > 0 then
+    boolean = args[1];
+  end
+  
+  if boolean then
+    turtle.forward = forward;
+    turtle.back = back;
+    turtle.up = up;
+    turtle.down = down;
+    turtle.turnLeft = turnLeft;
+    turtle.turnRight = turnRight;
+  else
+    turtle.forward = _turtle.forward;
+    turtle.back = _turtle.back;
+    turtle.up = _turtle.up;
+    turtle.down = _turtle.down;
+    turtle.turnLeft = _turtle.turnLeft;
+    turtle.turnRight = _turtle.turnRight;
+  end
+end
+
+-- **************************************************************
+-- @function localise(...)
+--
+-- Attempts to localise the turtle using GPS. Optionally allows
+-- the user to be prompted for coordinates.
+--
+-- @param [boolean]
+--   If the user is to be prompted to localise. Default false
+-- @return boolean
+--   If the localisation was successful
+-- **************************************************************
+function localise(...)
+
+  local args = {...};
+  local boolean = false;
+  
+  if #args > 0 then
+    boolean = args[1];
+  end
+  
+  local x,y,z = gps.locate();
+  
+  if x then -- GPS available
+    pose.pos = vector.new(x,y,z);
+    forward();
+    x,y,z = gps.locate();
+    back();
+    pose.ori = vec2ori(vector.new(x,y,z) - pose.pos);
+
+    if backupStatus then
+      save();
+    end
+
+    return true;
+  elseif boolean then -- Prompt user
+    print("Please enter your GPS coordinates and orientation (x,y,z,orientation)");
+    x,y,z,o = read():match("([\+\-]?%d+)[,%s]+([\+\-]?%d+)[,%s]+([\+\-]?%d+)[,%s]+(%a+)");
+    pose.pos = vector.new(x,y,z);
+    pose.ori = str2ori(o);
+
+    if backupStatus then
+      save();
+    end
+
+    return true;
+  else -- Could not determine location
+    return false;
+  end
+end
+
+-- **************************************************************
+-- @function nonblocking()
+--
+-- An event handler function for when the turtle uses goto and
+-- gets obscured by a block or entity upon which this handler
+-- will dig or attack.
+--
+-- Requires mining turtle
+--
+-- To be called in parallel with goto
+--
+-- @param nil
+-- @return boolean
+--    The status of the nonblocking move
+-- **************************************************************
+function nonblocking()
+
+	repeat
+		event, opperation, msg, status = os.pullEvent("nav");
+  	
+    if opperation == "step" and status == false then
+    	if msg == "forward" then
+      	if turtle.detect() then
+      		turtle.dig();
+        else
+        	turtle.attack();
+        end
+      else
+      	if turtle["detect" .. msg:gsub("^%l", string.upper)]() then
+      		turtle["dig" .. msg:gsub("^%l", string.upper)]();
+        else
+        	turtle["attack" .. msg:gsub("^%l", string.upper)]();
+       	end
+      end
+    	os.queueEvent("nav","retry");
+    end
+  until msg == "result" and status == true
+  
+  return status;
+end
+
+-- **************************************************************
+-- @function aversion()
+--
+-- An event handler function for when the turtle uses goto and
+-- gets obscured by a block or entity upon which this handler
+-- will pick an alternate route.
+--
+-- @param
+-- @return
+-- **************************************************************
+function aversion()
+
+	repeat
+		event, opperation, msg, status = os.pullEvent("nav");
+  	
+    if opperation == "step" and status == false then
+      setHandler(nil);
+    	if msg == "forward" then
+        if not up() then
+          if not down() then
+            if not left() then
+              if not right() then
+                os.queueEvent("nav","quit");
+              end
+            end
+          end
+        end
+      elseif msg == "up" then
+        if not forward() then
+          if not back() then
+            if not left() then
+              if not right() then
+                os.queueEvent("nav","quit");
+              end
+            end
+          end
+        end
+      elseif msg == "down" then
+        if not forward() then
+          if not back() then
+            if not left() then
+              if not right() then
+                os.queueEvent("nav","quit");
+              end
+            end
+          end
+        end
+      else
+        forward();
+      end
+      setHandler(aversion);
+    	os.queueEvent("nav","retry");
+    end
+  until msg == "result"
+  
+  return status;
+end
+
+-- INITIALISE
+protect(true);
+
+-- MAIN
+local args = {...};
+local options = {};
+options = {
+  {"-localise", 
+  function (n) 
+    localise(true);
+    _G["pose"] = pose;
+  end
+  },
+  {"-help", 
+  function (n) 
+    print("Options: ") 
+    for i = 1,#options do 
+      print(options[i][1]) 
+    end
+  end },
+  {"-goto", 
+  function (n)
+    if _G["pose"] then
+      pose = _G["pose"];
+    else
+      _G["pose"] = { vector.new(0,0,0), orientation.NORTH};
+    end
+
+    if args[n+4] then
+      if str2ori(args[n+4]) then
+        goto(tonumber(args[n+1]),tonumber(args[n+2]),tonumber(args[n+3]),args[n+4]);
+      else
+        goto(tonumber(args[n+1]),tonumber(args[n+2]),tonumber(args[n+3]));
+      end
+    else
+      goto(tonumber(args[n+1]),tonumber(args[n+2]),tonumber(args[n+3]));
+    end
+    _G["pose"] = pose;
+  end
+  }
+};
+
+if #args > 0 then
+  for i = 1,#args do
+    for j = 1,#options do
+      if args[i] == options[j][1] then
+        options[j][2](i);
+      end
+    end
+  end
+end
